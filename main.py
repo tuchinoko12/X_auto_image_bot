@@ -1,28 +1,25 @@
 import os
 import random
-import requests
-from PIL import Image
-from io import BytesIO
-import base64
+from gradio_client import Client
 import tweepy
-from google import genai  # Gemini 用
+from google import genai
 
-# ===== 環境変数ロード =====
-TWITTER_API_KEY = os.getenv("API_KEY_1")
-TWITTER_API_SECRET = os.getenv("API_SECRET_1")
-TWITTER_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN_1")
-TWITTER_ACCESS_SECRET = os.getenv("ACCESS_SECRET_1")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HF_SPACE_ID = os.getenv("HF_SPACE_ID")  # GitHub Secrets から
-
-HUGGINGFACE_SPACE_URL = f"https://{HF_SPACE_ID}.hf.space/run/predict"
-MODEL_INPUT_KEY = "prompt"  # Space によって異なる場合あり
+# ===== 設定 =====
+POST_INTERVAL_HOURS = 8  # もしループで自動投稿する場合
+HF_SPACE_ID = os.getenv("HF_SPACE_ID")  # GitHub Secrets
+MODEL_INPUT_KEY = "prompt"
 
 # ===== Gemini text_model 初期化 =====
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client_gemini = genai.Client(api_key=GEMINI_API_KEY)
 text_model = "gemini-2.0-flash"
 
 # ===== Twitter 認証 =====
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+TWITTER_ACCESS_SECRET = os.getenv("ACCESS_SECRET")
+
 auth = tweepy.OAuth1UserHandler(
     TWITTER_API_KEY, TWITTER_API_SECRET,
     TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET
@@ -34,33 +31,18 @@ def generate_word():
     hira = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
     return "".join(random.choice(hira) for _ in range(3))
 
-# ===== 画像生成 =====
+# ===== 画像生成 (gradio_client 経由) =====
 def generate_image(word):
     prompt = f"『{word}』という日本語の単語から連想されるバズるイラストまたは写真"
-    payload = {MODEL_INPUT_KEY: prompt}
     try:
-        response = requests.post(HUGGINGFACE_SPACE_URL, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-        # Hugging Face Space によって返却形式が違う場合があるので確認
-        if "data" in data and data["data"]:
-            image_base64 = data["data"][0]
-            image = Image.open(BytesIO(base64.b64decode(image_base64)))
-            file_name = f"{word}.png"
-            image.save(file_name)
-            return file_name
-        elif "url" in data:
-            # URL 形式で返ってきた場合
-            image_url = data["url"]
-            image_resp = requests.get(image_url)
-            image = Image.open(BytesIO(image_resp.content))
-            file_name = f"{word}.png"
-            image.save(file_name)
-            return file_name
+        client = Client(HF_SPACE_ID)
+        result = client.predict(prompt, api_name="/predict")  # Space によって api_name が異なる場合あり
+        # result は dict か list 形式 depending on Space
+        if isinstance(result, dict) and "data" in result:
+            image_data = result["data"][0]
         else:
-            print("❌ 画像生成結果の形式が不明です")
-            return None
+            image_data = result[0]  # 適宜調整
+        return image_data  # URL か base64 など Space による
     except Exception as e:
         print(f"❌ 画像生成エラー: {e}")
         return None
@@ -73,8 +55,7 @@ def generate_hashtags(word):
             model=text_model,
             contents=[prompt],
         )
-        # 修正: 最新のAPIでは output_text で取得
-        hashtags_text = response.output_text
+        hashtags_text = response.candidates[0].content[0].text
         hashtags = [tag.strip() for tag in hashtags_text.split("\n") if tag.strip()]
         return hashtags[:10]
     except Exception as e:
@@ -82,14 +63,28 @@ def generate_hashtags(word):
         return []
 
 # ===== Twitter 投稿 =====
-def post_to_twitter(word, image_path):
+def post_to_twitter(word, image_data):
     hashtags = generate_hashtags(word)
     try:
-        if image_path:
-            media = api_v1.media_upload(filename=image_path)
+        media_ids = None
+        if image_data:
+            # 画像がURLの場合は requests で取得して一時保存
+            import requests
+            from PIL import Image
+            from io import BytesIO
+
+            if image_data.startswith("http"):
+                resp = requests.get(image_data)
+                image = Image.open(BytesIO(resp.content))
+            else:
+                # base64 の場合
+                import base64
+                image = Image.open(BytesIO(base64.b64decode(image_data)))
+
+            file_name = f"{word}.png"
+            image.save(file_name)
+            media = api_v1.media_upload(filename=file_name)
             media_ids = [media.media_id]
-        else:
-            media_ids = None
 
         text = f"生成単語: {word}\n" + " ".join(hashtags)
         api_v1.update_status(status=text, media_ids=media_ids)
@@ -101,8 +96,8 @@ def post_to_twitter(word, image_path):
 def main():
     word = generate_word()
     print(f"🎲 生成単語: {word}")
-    image_path = generate_image(word)
-    post_to_twitter(word, image_path)
+    image_data = generate_image(word)
+    post_to_twitter(word, image_data)
 
 if __name__ == "__main__":
     main()
