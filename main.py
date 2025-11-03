@@ -42,12 +42,25 @@ def generate_image(word):
         response = requests.post(HUGGINGFACE_SPACE_URL, json=payload)
         response.raise_for_status()
         data = response.json()
-        # Space によって返却形式が異なる場合はここを調整
-        image_base64 = data["data"][0]  
-        image = Image.open(BytesIO(base64.b64decode(image_base64)))
-        file_name = f"{word}.png"
-        image.save(file_name)
-        return file_name
+
+        # Hugging Face Space によって返却形式が違う場合があるので確認
+        if "data" in data and data["data"]:
+            image_base64 = data["data"][0]
+            image = Image.open(BytesIO(base64.b64decode(image_base64)))
+            file_name = f"{word}.png"
+            image.save(file_name)
+            return file_name
+        elif "url" in data:
+            # URL 形式で返ってきた場合
+            image_url = data["url"]
+            image_resp = requests.get(image_url)
+            image = Image.open(BytesIO(image_resp.content))
+            file_name = f"{word}.png"
+            image.save(file_name)
+            return file_name
+        else:
+            print("❌ 画像生成結果の形式が不明です")
+            return None
     except Exception as e:
         print(f"❌ 画像生成エラー: {e}")
         return None
@@ -60,7 +73,8 @@ def generate_hashtags(word):
             model=text_model,
             contents=[prompt],
         )
-        hashtags_text = response.candidates[0].content[0].text
+        # 修正: 最新のAPIでは output_text で取得
+        hashtags_text = response.output_text
         hashtags = [tag.strip() for tag in hashtags_text.split("\n") if tag.strip()]
         return hashtags[:10]
     except Exception as e:
