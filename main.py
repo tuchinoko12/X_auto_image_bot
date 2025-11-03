@@ -1,101 +1,73 @@
 import os
 import random
-import base64
-from io import BytesIO
-from PIL import Image
 import tweepy
 from gradio_client import Client
-import google.generativeai as genai
+from google import genai
+import requests
 
-# ======== 環境変数ロード ========
-TWITTER_API_KEY = os.getenv("API_KEY_1")
-TWITTER_API_SECRET = os.getenv("API_SECRET_1")
-TWITTER_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN_1")
-TWITTER_ACCESS_SECRET = os.getenv("ACCESS_SECRET_1")
+# ==== API Keys ====
+API_KEY = os.getenv("API_KEY_1")
+API_SECRET = os.getenv("API_SECRET_1")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN_1")
+ACCESS_SECRET = os.getenv("ACCESS_SECRET_1")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HF_SPACE_ID = os.getenv("HF_SPACE_ID")  # 例: "robotsan-x-bot-image"
+HF_SPACE_ID = os.getenv("HF_SPACE_ID")
 
-# ======== Twitter 認証 ========
-auth = tweepy.OAuth1UserHandler(
-    TWITTER_API_KEY, TWITTER_API_SECRET,
-    TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET
-)
-api_v1 = tweepy.API(auth)
+# ==== Twitter認証 ====
+auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET)
+api = tweepy.API(auth)
 
-# ======== Gemini 初期化 ========
-genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-1.5-flash-latest"
+# ==== 単語リスト ====
+WORDS = ["けえす", "しんえん", "にゃるらと", "とけいだい", "ゆめのあと", "あめあがり", "しずく", "てんま", "ほしのゆめ"]
 
-# ======== ひらがな3文字生成 ========
-def generate_word():
-    hira = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
-    return "".join(random.choice(hira) for _ in range(3))
+# ==== ランダム単語生成 ====
+word = random.choice(WORDS)
+print(f"🎲 生成単語: {word}")
 
-# ======== 画像生成 ========
-def generate_image(word):
-    try:
-        print("🎨 画像生成中...")
-        client = Client(f"https://{HF_SPACE_ID}.hf.space/")
-        result = client.predict(
-            f"『{word}』という日本語の単語から連想されるバズるイラストまたは写真",
-            api_name="/predict"
-        )
+# ==== 画像生成 ====
+try:
+    print("🎨 画像生成中...")
+    client = Client(HF_SPACE_ID)
+    result = client.predict(word)
 
-        # Spaceの出力形式に応じて処理
-        if isinstance(result, str) and result.startswith("data:image"):
-            image_base64 = result.split(",")[1]
-        elif isinstance(result, list) and isinstance(result[0], str):
-            image_base64 = result[0].split(",")[1] if result[0].startswith("data:image") else result[0]
-        else:
-            raise ValueError(f"画像生成APIの応答が不正です: {result}")
+    # 出力結果の形式を確認
+    if isinstance(result, list):
+        image_path = result[0]
+    else:
+        image_path = result
 
-        # base64 デコード
-        image_data = base64.b64decode(image_base64 + "=" * (-len(image_base64) % 4))
-        image_path = "output.png"
-        with open(image_path, "wb") as f:
-            f.write(image_data)
+    # ローカルパス or URL 判定
+    if os.path.exists(image_path):
+        media = api.media_upload(filename=image_path)
+    else:
+        img_data = requests.get(image_path).content
+        with open("temp.jpg", "wb") as f:
+            f.write(img_data)
+        media = api.media_upload(filename="temp.jpg")
 
-        print("✅ 画像生成成功")
-        return image_path
-    except Exception as e:
-        print(f"❌ 画像生成エラー: {e}")
-        return None
+except Exception as e:
+    print(f"❌ 画像生成エラー: {e}")
+    media = None
 
-# ======== ハッシュタグ生成 ========
-def generate_hashtags(word):
-    try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        prompt = f"「{word}」から連想される面白く自然な日本語ハッシュタグを5個、#をつけて改行区切りで出力してください。"
-        response = model.generate_content(prompt)
-        hashtags = [tag.strip() for tag in response.text.strip().split("\n") if tag.strip()]
-        print("✅ ハッシュタグ生成成功")
-        return hashtags
-    except Exception as e:
-        print(f"❌ ハッシュタグ生成エラー: {e}")
-        return []
+# ==== Geminiでハッシュタグ生成 ====
+try:
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"単語『{word}』を含む創作的な日本語ツイート文とハッシュタグ3つを生成してください。"
+    response = client.models.generate_content(
+        model="models/gemini-2.5-flash",
+        contents=[prompt]
+    )
+    tweet_text = response.text.strip()
+except Exception as e:
+    print(f"❌ ハッシュタグ生成エラー: {e}")
+    tweet_text = f"{word} #AI生成 #自動投稿"
 
-# ======== Twitter 投稿 ========
-def post_to_twitter(word, image_path):
-    hashtags = generate_hashtags(word)
-    try:
-        if image_path:
-            media = api_v1.media_upload(filename=image_path)
-            media_ids = [media.media_id]
-        else:
-            media_ids = None
-
-        text = f"生成単語: {word}\n" + " ".join(hashtags)
-        api_v1.update_status(status=text, media_ids=media_ids)
-        print(f"✅ 投稿成功: {text}")
-    except Exception as e:
-        print(f"❌ 投稿エラー: {e}")
-
-# ======== メイン処理 ========
-def main():
-    word = generate_word()
-    print(f"🎲 生成単語: {word}")
-    image_path = generate_image(word)
-    post_to_twitter(word, image_path)
-
-if __name__ == "__main__":
-    main()
+# ==== Xに投稿 ====
+try:
+    if media:
+        api.update_status(status=tweet_text, media_ids=[media.media_id])
+    else:
+        api.update_status(status=tweet_text)
+    print("✅ 投稿完了！")
+except Exception as e:
+    print(f"❌ 投稿エラー: {e}")
