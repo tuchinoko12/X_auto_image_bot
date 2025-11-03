@@ -1,0 +1,33 @@
+name: Auto Post to X
+
+on:
+  schedule:
+    - cron: "0 */8 * * *"  # 8時間ごとに実行（UTC時間）
+  workflow_dispatch:        # 手動実行も可能
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run bot
+      env:
+        API_KEY_1: ${{ secrets.API_KEY_1 }}
+        API_SECRET_1: ${{ secrets.API_SECRET_1 }}
+        ACCESS_TOKEN_1: ${{ secrets.ACCESS_TOKEN_1 }}
+        ACCESS_SECRET_1: ${{ secrets.ACCESS_SECRET_1 }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
+      run: python main.py
