@@ -2,7 +2,7 @@ import os
 import random
 from gradio_client import Client
 import tweepy
-from google import genai
+import google.generativeai as genai
 
 # ===== 設定 =====
 POST_INTERVAL_HOURS = 8  # もしループで自動投稿する場合
@@ -101,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
