@@ -15,10 +15,10 @@ genai.configure(api_key=GEMINI_API_KEY)
 text_model = "gemini-2.0-flash"
 
 # ===== Twitter 認証 =====
-TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
-TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
-TWITTER_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
-TWITTER_ACCESS_SECRET = os.getenv("ACCESS_SECRET")
+TWITTER_API_KEY = os.getenv("API_KEY_1")
+TWITTER_API_SECRET = os.getenv("API_SECRET_1")
+TWITTER_ACCESS_TOKEN = os.getenv("ACCESS_TOKEN_1")
+TWITTER_ACCESS_SECRET = os.getenv("ACCESS_SECRET_1")
 
 auth = tweepy.OAuth1UserHandler(
     TWITTER_API_KEY, TWITTER_API_SECRET,
@@ -101,5 +101,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
