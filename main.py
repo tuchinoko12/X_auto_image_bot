@@ -17,7 +17,7 @@ HF_SPACE_ID = os.getenv("HF_SPACE_ID")
 
 # === Gemini設定 ===
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 # === ランダム単語生成 ===
 def generate_random_word():
@@ -87,3 +87,4 @@ if __name__ == "__main__":
     tweet_text = f"{word}\n{hashtags}"
 
     post_to_twitter(tweet_text, image_path)
+
