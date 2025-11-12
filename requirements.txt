@@ -4,4 +4,7 @@ gradio_client
 Pillow
 requests
 python-dotenv
+requests
+newspaper3k
+lxml_html_clean
 
