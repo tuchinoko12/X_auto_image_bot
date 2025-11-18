@@ -3,25 +3,44 @@ name: Daily News Bot
 on:
   schedule:
     # 1日3回 (日本時間 7:00, 15:00, 23:00) に実行
-    - cron: "0 22 * * *"  # JST 7:00 (UTC 22:00)
-    - cron: "0 6 * * *"   # JST 15:00 (UTC 6:00)
-    - cron: "0 14 * * *"  # JST 23:00 (UTC 14:00)
+    - cron: "0 22 * * *"
+    - cron: "0 6 * * *"
+    - cron: "0 14 * * *"
   workflow_dispatch:
+
+# 👇【重要】GitHubのリポジトリを書き換える権限を与える
+permissions:
+  contents: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run News Bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          LINE_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python main.py
+        run: python news_bot.py
+
+      # 👇【ここを追加】変更された履歴ファイル(json)をGitHubに保存する設定
+      - name: Commit and Push history
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # ファイルがあればステージング
+          git add sent_news.json
+          
+          # 変更がある場合のみコミットしてプッシュ
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update sent news history" && git push)
