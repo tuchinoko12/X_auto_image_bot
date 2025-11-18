@@ -1,100 +1,157 @@
 import os
-import random
-import base64
 import requests
-from gradio_client import Client
+import feedparser
+import json
+from dotenv import load_dotenv
 import google.generativeai as genai
-import tweepy
 
-# === 設定 ===
-# 環境変数（GitHub Secretsから読み込まれる）
-API_KEY = os.getenv("API_KEY_1")
-API_SECRET = os.getenv("API_SECRET_1")
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN_1")
-ACCESS_SECRET = os.getenv("ACCESS_SECRET_1")
+# ================= 設定 =================
+load_dotenv()
+
+LINE_TOKEN = os.getenv("LINE_TOKEN")
+LINE_USER_ID = os.getenv("LINE_USER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HF_SPACE_ID = os.getenv("HF_SPACE_ID")
+RSS_URL = "https://www3.nhk.or.jp/rss/news/cat0.xml"
+HISTORY_FILE = "sent_news.json"
 
-# === Gemini設定 ===
+# Gemini設定
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
 
-# === ランダム単語生成 ===
-def generate_random_word():
-    hiragana = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
-    return ''.join(random.choices(hiragana, k=random.randint(3, 5)))
+# ==========================================
+# 過去に送ったニュース履歴管理
+# ==========================================
+def load_history():
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-# === Hugging Faceで画像生成 ===
-def generate_image(prompt):
-    try:
-        print("🎨 画像生成中...")
-        client = client = Client(HF_SPACE_ID)
-        result = client.predict(prompt, api_name="/predict")
+def save_history(url):
+    history = load_history()
+    history.append(url)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
-        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], str):
-            image_path = result[0]
-            if image_path.startswith("/tmp"):
-                raise ValueError(f"画像生成APIの応答が不正です: {image_path}")
+# ==========================================
+# RSSから最新ニュース取得
+# ==========================================
+def fetch_latest_news(limit=10):
+    feed = feedparser.parse(RSS_URL)
+    news_list = []
+    for entry in feed.entries[:limit]:
+        news_list.append({
+            "title": entry.title,
+            "summary": entry.summary,
+            "url": entry.link
+        })
+    return news_list
 
-            image_url = f"https://{HF_SPACE_ID}.hf.space/file={image_path}"
-            response = requests.get(image_url)
-            if response.status_code == 200:
-                filename = "output.png"
-                with open(filename, "wb") as f:
-                    f.write(response.content)
-                return filename
-            else:
-                raise ValueError(f"画像取得失敗: {response.status_code}")
-        else:
-            raise ValueError("画像生成APIの応答が不正です")
-    except Exception as e:
-        print(f"❌ 画像生成エラー: {e}")
-        return None
+# ==========================================
+# Geminiで注目ニュースを選ぶ
+# ==========================================
+def select_trending_news(news_list):
+    prompt = "以下のニュースの中で、政治・社会的に最も注目すべきニュースはどれか選び、URLを教えてください。\n\n"
+    for i, news in enumerate(news_list):
+        prompt += f"{i+1}. {news['title']} - {news['summary']}\nURL: {news['url']}\n\n"
+    prompt += "番号ではなく、ニュースのURLだけを返してください。"
 
-# === Geminiでハッシュタグ生成 ===
-def generate_hashtags(word):
-    try:
-        prompt = f"次の単語に合う日本語のハッシュタグを3つ生成してください。単語: {word}"
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        print(f"❌ ハッシュタグ生成エラー: {e}")
-        return ""
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
-# === X（Twitter）に投稿 ===
-import requests
-import os
+# ==========================================
+# コレイヌ（アイちゃん）風要約
+# ==========================================
+def generate_koreinu_summary(news):
+    prompt = f"""
+以下の政治ニュースを「アイちゃん」という皮肉にモノ申す系女子高生風に要約してください。
 
-def post_to_twitter(text, image_path=None):
-    try:
-        BEARER_TOKEN = os.getenv("BEARER_TOKEN_1")  # XのBearerトークンを新しく.envに追加
+条件：
+・250文字以内
+・ニュース要約＋皮肉コメント
+・いいところは良い、悪いところは悪いとハッキリ言う
+・文末は女子高生口語（〜だよね、〜じゃん、〜かも、〜なの等）
+・ツッコミや感想を必ず入れる
+・政治・社会ニュース向けで冷静な批評調
+・ネットの反応（多数派の意見）をベースにコメントを作る
+・最後にURLを添える
 
-        # まず画像をアップロードできるようにする（Freeではmedia不可のため、画像なしツイート推奨）
-        if image_path and os.path.exists(image_path):
-            print("⚠️ Freeプランでは画像付き投稿は非対応の可能性があります。")
-        
-        url = "https://api.x.com/2/tweets"
-        headers = {"Authorization": f"Bearer {BEARER_TOKEN}"}
-        payload = {"text": text}
+ニュース本文：
+{news['summary']}
+URL: {news['url']}
+"""
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 201:
-            print("✅ 投稿完了！")
-        else:
-            print(f"❌ 投稿エラー: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"❌ 投稿エラー: {e}")
+# ==========================================
+# JK風ハッシュタグ生成
+# ==========================================
+def generate_jk_hashtags(news):
+    prompt = f"""
+以下のニュースに関連して、3つの日本語ハッシュタグを作ってください。
 
-# === メイン処理 ===
+条件：
+- 文頭に#をつける
+- 短くてわかりやすい
+- 政治・社会ニュース向け
+- JKっぽいほんの少し遊び心
+- 文章ではなく単語・フレーズのみ
+
+ニュース本文：
+{news['summary']}
+"""
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+
+    lines = response.text.strip().splitlines()
+    hashtags = [line.strip() for line in lines if line.strip().startswith("#")]
+    return hashtags[:3]
+
+# ==========================================
+# LINEに送信
+# ==========================================
+def send_line_message(message):
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Authorization": f"Bearer {LINE_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": message}]
+    }
+    res = requests.post(url, headers=headers, json=payload)
+    print(f"LINE送信結果: {res.status_code}, {res.text}")
+
+# ==========================================
+# メイン実行
+# ==========================================
 if __name__ == "__main__":
-    word = generate_random_word()
-    print(f"🎲 生成単語: {word}")
+    try:
+        history = load_history()
+        news_list = fetch_latest_news(limit=10)
+        # 送信済みニュースを除外
+        news_list = [n for n in news_list if n["url"] not in history]
 
-    image_path = generate_image(word)
-    hashtags = generate_hashtags(word)
-    tweet_text = f"{word}\n{hashtags}"
+        if not news_list:
+            print("❌ 新しいニュースはありません")
+            exit()
 
-    post_to_twitter(tweet_text, image_path)
+        selected_url = select_trending_news(news_list)
+        selected_news = next((n for n in news_list if n["url"] == selected_url), None)
+        if not selected_news:
+            raise ValueError("Geminiが返したURLがRSSに存在しません。")
 
+        summary = generate_koreinu_summary(selected_news)
+        hashtags = generate_jk_hashtags(selected_news)
+        hashtag_text = "\n".join(hashtags)
 
+        message = summary + "\n\n" + hashtag_text
 
+        send_line_message(message)
+        save_history(selected_news["url"])
+        print("✅ 完了：LINEにニュース送信しました！")
+
+    except Exception as e:
+        print("❌ エラー:", e)
