@@ -1,9 +1,9 @@
 import os
 import requests
 import feedparser
+import google.generativeai as genai
 import json
 from dotenv import load_dotenv
-import google.generativeai as genai
 
 # ================= 設定 =================
 load_dotenv()
@@ -11,147 +11,184 @@ load_dotenv()
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-RSS_URL = "https://www3.nhk.or.jp/rss/news/cat0.xml"
-HISTORY_FILE = "sent_news.json"
 
-# Gemini設定
+RSS_URL = "https://www3.nhk.or.jp/rss/news/cat0.xml"
+HISTORY_FILE = "sent_news.json" # 送信済みニュースのURLを保存するファイル
+
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ==========================================
 # 過去に送ったニュース履歴管理
 # ==========================================
 def load_history():
+    """履歴ファイルをロードし、過去に送信したURLのリストを返す"""
     if not os.path.exists(HISTORY_FILE):
         return []
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        # ファイル内容が壊れている場合は空リストを返す
+        print(f"⚠️ 履歴ファイル ({HISTORY_FILE}) のJSON形式が不正です。新しく作成します。")
+        return []
 
 def save_history(url):
+    """送信に成功したニュースのURLを履歴に追加し、ファイルを保存する"""
     history = load_history()
-    history.append(url)
+    
+    # 重複を削除し、最新のURLを追加
+    history = list(set(history))
+    if url not in history:
+        history.append(url)
+    
+    # ファイルが肥大化しないよう、最新の50件のみを保持
+    history = history[-50:]
+
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
+
 # ==========================================
-# RSSから最新ニュース取得
+# RSSニュース取得
 # ==========================================
 def fetch_latest_news(limit=10):
-    feed = feedparser.parse(RSS_URL)
-    news_list = []
-    for entry in feed.entries[:limit]:
-        news_list.append({
+    """RSSフィードから最新のニュースを取得する"""
+    try:
+        feed = feedparser.parse(RSS_URL)
+        return [{
             "title": entry.title,
             "summary": entry.summary,
             "url": entry.link
-        })
-    return news_list
+        } for entry in feed.entries[:limit]]
+    except Exception as e:
+        print(f"❌ RSSフィードの取得またはパースに失敗しました: {e}")
+        return []
+
 
 # ==========================================
-# Geminiで注目ニュースを選ぶ
+# Gemini に JSON だけ返させる（安全版）
 # ==========================================
-def select_trending_news(news_list):
-    prompt = "以下のニュースの中で、政治・社会的に最も注目すべきニュースはどれか選び、URLを教えてください。\n\n"
-    for i, news in enumerate(news_list):
-        prompt += f"{i+1}. {news['title']} - {news['summary']}\nURL: {news['url']}\n\n"
-    prompt += "番号ではなく、ニュースのURLだけを返してください。"
+def process_news_with_gemini(news_list):
+    """ニュースリストから一つを選択し、要約とハッシュタグをJSON形式で生成させる"""
+    
+    # ニュースのタイトルとURLのみをプロンプトに含める（トークン節約のため）
+    news_data_for_prompt = [{
+        "title": n["title"],
+        "url": n["url"]
+    } for n in news_list]
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    response = model.generate_content(prompt)
-    return response.text.strip()
-
-# ==========================================
-# コレイヌ（アイちゃん）風要約
-# ==========================================
-def generate_koreinu_summary(news):
     prompt = f"""
-以下の政治ニュースを「アイちゃん」という皮肉にモノ申す系女子高生風に要約してください。
+以下の未送信ニュース一覧から重要な 1 件を選び、以下の JSON 形式だけで返してください。
+絶対に JSON の外に文章や説明を書かないこと。改行・補足禁止。
+hashtagsは女子高生（JK）ぽい、少し皮肉の効いた言い回しでお願いします。
 
-条件：
-・250文字以内
-・ニュース要約＋皮肉コメント
-・いいところは良い、悪いところは悪いとハッキリ言う
-・文末は女子高生口語（〜だよね、〜じゃん、〜かも、〜なの等）
-・ツッコミや感想を必ず入れる
-・政治・社会ニュース向けで冷静な批評調
-・ネットの反応（多数派の意見）をベースにコメントを作る
-・最後にURLを添える
+形式:
+{{
+    "selected_url": "選んだニュースのURL",
+    "summary": "
+    ・250文字以内のアイちゃん要約
+    ・ニュース内容＋皮肉コメント
+    ・SNS上の多数派の反応（平均的な意見）を元にコメントする
+    ・文末は女子高生口語（〜だよね、〜じゃん、〜なの等）
+    ・良い点と悪い点どちらも言及
+    ",
+    "hashtags": ["#タグ1", "#タグ2", "#タグ3"]
+}}
 
-ニュース本文：
-{news['summary']}
-URL: {news['url']}
+ニュース一覧:
+{json.dumps(news_data_for_prompt, ensure_ascii=False)}
 """
+
     model = genai.GenerativeModel("gemini-2.5-flash")
-    response = model.generate_content(prompt)
-    return response.text.strip()
-
-# ==========================================
-# JK風ハッシュタグ生成
-# ==========================================
-def generate_jk_hashtags(news):
-    prompt = f"""
-以下のニュースに関連して、3つの日本語ハッシュタグを作ってください。
-
-条件：
-- 文頭に#をつける
-- 短くてわかりやすい
-- 政治・社会ニュース向け
-- JKっぽいほんの少し遊び心
-- 文章ではなく単語・フレーズのみ
-
-ニュース本文：
-{news['summary']}
-"""
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # APIコール
     response = model.generate_content(prompt)
 
-    lines = response.text.strip().splitlines()
-    hashtags = [line.strip() for line in lines if line.strip().startswith("#")]
-    return hashtags[:3]
+    raw = response.text.strip()
+    print("\n===== Gemini Raw Response =====")
+    print(raw)
+    print("===== END =====\n")
+
+    # JSONだけ抽出（AIが文章混ぜても復旧できるパースロジック）
+    try:
+        json_start = raw.find("{")
+        json_end = raw.rfind("}") + 1
+        json_str = raw[json_start:json_end]
+
+        return json.loads(json_str)
+
+    except Exception as e:
+        print("❌ JSONパース失敗。Geminiの応答が不正な可能性があります:", e)
+        print("Geminiの返答:", raw)
+        raise e
+
 
 # ==========================================
-# LINEに送信
+# LINE送信
 # ==========================================
 def send_line_message(message):
+    """LINE Messaging APIを通じてメッセージを送信する"""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
+
     payload = {
-        "to": LINE_USER_ID,
+        # LINE_USER_IDは環境変数から取得されます
+        "to": LINE_USER_ID, 
         "messages": [{"type": "text", "text": message}]
     }
-    res = requests.post(url, headers=headers, json=payload)
-    print(f"LINE送信結果: {res.status_code}, {res.text}")
+
+    try:
+        res = requests.post(url, headers=headers, json=payload)
+        res.raise_for_status() # HTTPエラーをチェック
+        print(f"✅ LINE送信成功: {res.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ LINE送信失敗: {e}")
+        print(f"レスポンス: {res.text if 'res' in locals() else 'N/A'}")
+
 
 # ==========================================
-# メイン実行
+# メイン
 # ==========================================
 if __name__ == "__main__":
     try:
+        # 1. 履歴のロード
         history = load_history()
-        news_list = fetch_latest_news(limit=10)
-        # 送信済みニュースを除外
-        news_list = [n for n in news_list if n["url"] not in history]
-
-        if not news_list:
-            print("❌ 新しいニュースはありません")
+        
+        # 2. 最新ニュースの取得とフィルタリング
+        latest_news = fetch_latest_news(limit=10)
+        # 既に送信済みのURLを除外して、未送信ニュースのリストを作成
+        news_list_unseen = [n for n in latest_news if n["url"] not in history]
+        
+        if not news_list_unseen:
+            print("📢 現在、新しい未送信のニュースはありませんでした。処理を終了します。")
             exit()
 
-        selected_url = select_trending_news(news_list)
-        selected_news = next((n for n in news_list if n["url"] == selected_url), None)
-        if not selected_news:
-            raise ValueError("Geminiが返したURLがRSSに存在しません。")
+        # 3. Geminiで最も重要なニュースを選択し、要約とタグを生成
+        # 未送信ニュースリストのみを渡す
+        result = process_news_with_gemini(news_list_unseen)
 
-        summary = generate_koreinu_summary(selected_news)
-        hashtags = generate_jk_hashtags(selected_news)
-        hashtag_text = "\n".join(hashtags)
+        # 結果を取り出し
+        summary = result.get("summary", "要約なし")
+        raw_hashtags = result.get("hashtags", [])
+        url = result.get("selected_url", "")
+        
+        if not url:
+            raise ValueError("Geminiの応答に 'selected_url' が含まれていません。")
 
-        message = summary + "\n\n" + hashtag_text
+        # 4. 送信メッセージの整形
+        hashtags = "\n".join(raw_hashtags)
+        message = f"{summary}\n\n{hashtags}\n\n{url}"
 
+        # 5. LINE送信
         send_line_message(message)
-        save_history(selected_news["url"])
-        print("✅ 完了：LINEにニュース送信しました！")
+        
+        # 6. 履歴の保存 (送信成功後)
+        save_history(url)
+
+        print(f"✅ 完了：LINEにニュースを送信し、URL ({url}) を履歴に保存しました！")
 
     except Exception as e:
-        print("❌ エラー:", e)
+        print(f"❌ 重大なエラーが発生しました。処理を中断します: {e}")
+        # 例外が発生した場合、履歴は保存されないため、二重送信は防げる
