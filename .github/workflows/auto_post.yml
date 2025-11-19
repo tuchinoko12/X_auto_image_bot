@@ -37,7 +37,7 @@ jobs:
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
         # 🚨 実行するファイル名を修正
-        run: python main.py
+        run: python news_bot_twitter.py
 
       # 👇【ここを追加】変更された履歴ファイル(json)をGitHubに保存する設定
       - name: Commit and Push history
