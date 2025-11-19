@@ -21,36 +21,7 @@ HISTORY_FILE = "sent_news.json"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ==========================================
-# X クライアント
-# ==========================================
-def get_twitter_client():
-    client = tweepy.Client(
-        consumer_key=API_KEY,
-        consumer_secret=API_SECRET,
-        access_token=ACCESS_TOKEN,
-        access_token_secret=ACCESS_TOKEN_SECRET
-    )
-    return client
-
-# ==========================================
-# トレンド取得
-# ==========================================
-def get_trend_words(limit=5):
-    """日本と世界のトレンドから上位ワードを数件取得"""
-    try:
-        api = tweepy.API(
-            tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
-        )
-        trends_japan = api.get_place_trends(23424856)[0]["trends"]
-        trends_world = api.get_place_trends(1)[0]["trends"]
-
-        words = [t["name"] for t in (trends_japan + trends_world)[:limit]]
-        return words
-    except:
-        return []
-
-# ==========================================
-# 履歴（変更なし）
+# 履歴管理
 # ==========================================
 def load_history():
     if not os.path.exists(HISTORY_FILE):
@@ -63,15 +34,14 @@ def load_history():
 
 def save_history(url):
     history = load_history()
-    history = list(set(history))
     if url not in history:
         history.append(url)
-    history = history[-50:]
+    history = history[-50:]  # 過去50件だけ保持
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 # ==========================================
-# RSS
+# NHK RSSニュース取得
 # ==========================================
 def fetch_latest_news(limit=10):
     try:
@@ -81,28 +51,47 @@ def fetch_latest_news(limit=10):
         return []
 
 # ==========================================
-# Gemini（★ここを大幅改修）
+# X（Twitter）トレンド取得
+# ==========================================
+def get_trend_words(limit=5):
+    """日本と世界のトレンドから上位ワードを数件取得"""
+    try:
+        auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
+        api = tweepy.API(auth)
+
+        jp = api.get_place_trends(23424856)[0]["trends"]   # 日本
+        world = api.get_place_trends(1)[0]["trends"]       # 世界
+
+        words = [t["name"] for t in (jp + world)[:limit]]
+        return words
+
+    except Exception as e:
+        print("トレンド取得失敗:", e)
+        return []
+
+# ==========================================
+# Gemini による要約生成（150〜200文字）
 # ==========================================
 def process_news_with_gemini(news_list, trend_words):
     news_data = [{"title": n["title"], "url": n["url"]} for n in news_list]
 
     prompt = f"""
-以下のニュース一覧から重要な1件を選び、以下のJSON形式だけ返してください。
+以下のニュース一覧から重要な1件を選び、以下のJSON形式だけで返してください。
 
-・ハッシュタグは絶対に使わない。
-・文章は150〜200文字以内。
-・皮肉とツッコミを入れたJK口調。
-・文頭は【速報】、【悲報】、【朗報】のいずれかを状況に応じて使う。
-・トレンドワードを文章に自然に混ぜること（無理やりはNG）。
-・人の目を引く工夫として、適度に絵文字を入れる。
-・バズりやすい構造（共感 → ツッコミ → 軽いオチ）。
+・ハッシュタグ禁止
+・150〜200文字
+・皮肉＋JK口調
+・文頭は【速報】【朗報】【悲報】のいずれか
+・絵文字を適度に使う
+・トレンドワードを自然に混ぜる（無理やりはNG）
+・「共感 → ツッコミ → 軽いオチ」の構成でバズりを意識
 
 トレンドワード: {trend_words}
 
 形式:
 {{
-    "selected_url": "ニュースURL",
-    "text": "Xに投稿する本文（150〜200文字）"
+  "selected_url": "ニュースURL",
+  "text": "Xに投稿する本文（150〜200文字）"
 }}
 
 ニュース一覧:
@@ -118,43 +107,52 @@ def process_news_with_gemini(news_list, trend_words):
         json_end = raw.rfind("}") + 1
         return json.loads(raw[json_start:json_end])
     except Exception as e:
-        print("JSONパース失敗:", raw)
+        print("Gemini出力読み取り失敗:", raw)
         raise e
 
 # ==========================================
-# 投稿
+# Xへ投稿（v1.1 API → Freeプランでも確実）
 # ==========================================
 def post_to_twitter(message):
     try:
-        client = get_twitter_client()
-        response = client.create_tweet(text=message)
-        print(f"✅ X投稿成功！ ID: {response.data['id']}")
+        auth = tweepy.OAuth1UserHandler(
+            API_KEY,
+            API_SECRET,
+            ACCESS_TOKEN,
+            ACCESS_TOKEN_SECRET
+        )
+        api = tweepy.API(auth)
+
+        api.update_status(status=message)
+        print("✅ X投稿成功！")
         return True
 
-    except tweepy.TweepyException as e:
+    except Exception as e:
         print(f"❌ X投稿失敗: {e}")
         return False
 
 # ==========================================
-# メイン
+# メイン処理
 # ==========================================
 if __name__ == "__main__":
     try:
         history = load_history()
         latest_news = fetch_latest_news()
+        trend_words = get_trend_words(limit=5)
 
+        # 新しいニュースだけ対象
         news_list_unseen = [n for n in latest_news if n["url"] not in history]
+
         if not news_list_unseen:
             print("新しいニュースなし")
             exit()
 
-        trend_words = get_trend_words(limit=5)
+        # Gemini で投稿文生成
         result = process_news_with_gemini(news_list_unseen, trend_words)
 
         text = result.get("text", "")
         url = result.get("selected_url", "")
 
-        # 投稿
         tweet_text = f"{text}\n{url}"
 
         if post_to_twitter(tweet_text):
